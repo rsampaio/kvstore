@@ -1,7 +1,9 @@
 package server
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 	"net"
 	"strconv"
 
@@ -41,13 +43,12 @@ func (h Handler) Set(s store.Store, args []string, value string, _ net.Conn) (st
 
 // Get receives a store, a slice of args and a connection and
 // handles the GET command when it is parsed by the protocol.
-func (h Handler) Get(s store.Store, args []string, _ string, _ net.Conn) (string, error) {
-	value, ok := s.Get(args[0])
-	out := "VALUE 0\r"
-	if ok {
-		out = fmt.Sprintf("VALUE %v %d\r", value, len(value))
-	}
-	return out, nil
+func (h Handler) Get(s store.Store, args []string, _ string, conn net.Conn) (string, error) {
+	value, _ := s.Get(args[0])
+	fmt.Fprintf(conn, "VALUE %d\r\n", len(value))
+	buf := bytes.NewReader([]byte(value))
+	io.CopyN(conn, buf, int64(len(value)))
+	return "\r", nil
 }
 
 // Delete receives a store, a slice of args and a connection and
