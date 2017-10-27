@@ -4,12 +4,27 @@ import "testing"
 
 func TestSet(t *testing.T) {
 	s := NewMemoryStore(100)
-	if err := s.Set("foo", "value"); err != nil {
-		t.Errorf("unexpected err: %v", err)
-	}
 
-	if _, ok := s.s.Load("foo"); !ok {
-		t.Errorf("key not stored")
+	for _, tt := range []struct {
+		K string
+		V string
+	}{
+		{
+			K: "foo",
+			V: "value",
+		},
+		{
+			K: "bar",
+			V: "aaaa\r\nbbbbb",
+		},
+	} {
+		if err := s.Set(tt.K, tt.V); err != nil {
+			t.Errorf("unexpected err: %v", err)
+		}
+
+		if v, _ := s.s.Load(tt.K); tt.V != v {
+			t.Errorf("key not stored")
+		}
 	}
 }
 

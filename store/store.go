@@ -24,6 +24,7 @@ type MemoryStore struct {
 
 	// TODO: This could be a circular buff
 	cachedAcc sort.IntSlice
+	cachedMod sort.IntSlice
 
 	cap int
 	mc  sync.Mutex
@@ -55,8 +56,8 @@ func (m *MemoryStore) Set(key, value string) error {
 
 	// Reduce capacity
 	m.mc.Lock()
+	defer m.mc.Unlock()
 	m.cap -= len(value)
-	m.mc.Unlock()
 
 	return nil
 }
@@ -89,15 +90,17 @@ func (m *MemoryStore) Delete(key string) error {
 
 func (m *MemoryStore) GetLastModifiedKeys() []string {
 	var (
-		i sort.IntSlice
 		r []string
 	)
-	m.lastAcc.Range(func(key interface{}, value interface{}) bool {
-		i = append(i, key.(int))
-		return true
-	})
-	sort.Sort(sort.Reverse(i))
-	for _, t := range i {
+	if sort.IsSorted(m.cachedMod) {
+		m.lastAcc.Range(func(key interface{}, value interface{}) bool {
+			m.cachedMod = append(m.cachedMod, key.(int))
+			return true
+		})
+		sort.Sort(sort.Reverse(m.cachedMod))
+	}
+
+	for _, t := range m.cachedMod {
 		v, _ := m.lastMod.Load(t)
 		r = append(r, v.(string))
 	}
@@ -105,7 +108,9 @@ func (m *MemoryStore) GetLastModifiedKeys() []string {
 }
 
 func (m *MemoryStore) trackModifield(key string) {
-	m.lastMod.Store(time.Now().Unix(), key)
+	t := int(time.Now().Unix())
+	m.lastMod.Store(t, key)
+	m.cachedMod = append(sort.IntSlice{t}, m.cachedMod...)
 }
 
 func (m *MemoryStore) trackAccess(key string) {
