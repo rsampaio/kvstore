@@ -41,9 +41,8 @@ func (c *Commander) Run(ctx context.Context) error {
 				break
 			default:
 				fmt.Printf(
-					"listener=%v clients=%d capacity-left=%dbytes\n",
+					"listener=%v capacity-left=%dbytes\n",
 					c.listener.Addr(),
-					c.metrics.clientCount,
 					c.store.Cap(),
 				)
 				time.Sleep(10 * time.Second)
@@ -61,44 +60,45 @@ func (c *Commander) Run(ctx context.Context) error {
 				return err
 			}
 			go func() {
-				c.metrics.clientCount++
-				if err := c.WaitCommands(conn); err != nil {
+				if err := c.WaitCommands(ctx, conn); err != nil {
 					fmt.Printf("wait command error: %v\n", err)
 					conn.Close()
 				}
-				c.metrics.clientCount--
 			}()
 		}
 	}
 }
 
 // WaitCommands handles connections and parse commands from clients
-func (c *Commander) WaitCommands(conn net.Conn) error {
+func (c *Commander) WaitCommands(ctx context.Context, conn net.Conn) error {
 	p := &protocol.Protocol{}
 
-	scan := bufio.NewScanner(conn)
-	for scan.Scan() {
-		line := scan.Text()
-		// If command is invalid parse will return an error
-		if err := p.Parse(string(line)); err != nil {
-			fmt.Fprintln(conn, "ERROR")
-			return err
-		}
+	buf := bufio.NewReader(conn)
 
-		var value string
-		// Read the input value if the command expects one
-		if p.ReceivesValue {
-			if scan.Scan() {
-				value = scan.Text()
+	for {
+		select {
+		case <-ctx.Done():
+			break
+		default:
+			// Ignore empty lines
+			line, _, err := buf.ReadLine()
+			if string(line) == "" {
+				continue
 			}
-		}
 
-		result, err := DefaultHandlers[p.Command](c.store, p.Args, value, conn)
+			// If command is invalid parse will return an error
+			if err := p.Parse(string(line)); err != nil {
+				fmt.Fprintln(conn, "ERROR")
+				return err
+			}
 
-		// Adds \n back but not \r
-		fmt.Fprintln(conn, result)
-		if err != nil {
-			return err
+			result, err := DefaultHandlers[p.Command](c.store, p.Args, buf, conn)
+
+			// Adds \n back but not \r
+			fmt.Fprintln(conn, result)
+			if err != nil {
+				return err
+			}
 		}
 	}
 	return nil

@@ -36,7 +36,7 @@ func TestServer(t *testing.T) {
 			t.Fatalf("unexpected client write error: %v", err)
 		}
 
-		if _, err = fmt.Fprint(c, "a\r\n"); err != nil {
+		if _, err = fmt.Fprint(c, "a"); err != nil {
 			t.Fatalf("unexpected write error: %v", err)
 		}
 
@@ -67,7 +67,7 @@ func BenchmarkServer(b *testing.B) {
 	b.Run("Set", func(b *testing.B) {
 		for i := 0; i <= b.N; i++ {
 			fmt.Fprint(c, "SET foo 1\r\n")
-			fmt.Fprint(c, "a\r\n")
+			fmt.Fprint(c, "a")
 
 			v, err := bufio.NewReader(c).ReadString('\n')
 			if err != nil && v != "OK\r\n" {
@@ -80,10 +80,15 @@ func BenchmarkServer(b *testing.B) {
 	b.Run("Get", func(b *testing.B) {
 		for i := 0; i <= b.N; i++ {
 			fmt.Fprint(c, "GET foo\r\n")
+			buf := bufio.NewReader(c)
+			v, err := buf.ReadString('\n')
+			if err != nil && v != "VALUE 1" {
+				b.Errorf("unexpected response: %v", v)
+			}
 
-			v, err := bufio.NewReader(c).ReadString('\n')
-			if err != nil && v != "VALUE a 1\r\n" {
-				b.Errorf("unexpected response")
+			v, err = buf.ReadString('\n')
+			if err != nil && v != "a\r\n" {
+				b.Errorf("unexpected response: %v", v)
 			}
 		}
 	})

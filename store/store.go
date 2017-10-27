@@ -12,45 +12,21 @@ type Store interface {
 	Get(key string) (string, bool)
 	Delete(key string) error
 	Cap() int
-	GetSortedLastModifiedList() TimeTrackingAsc
+	GetLastModifiedKeys() []string
 }
-
-// At define time access or modify time tracking format
-type At struct {
-	Key string
-	At  int64
-}
-
-// TimeTrackingDesc is a list of time that can be sorted descending
-type TimeTrackingDesc []At
-
-// TimeTrackingDesc is a list of time that can be sorted ascending
-type TimeTrackingAsc []At
-
-// Implement sort interface
-func (a TimeTrackingDesc) Len() int           { return len(a) }
-func (a TimeTrackingDesc) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a TimeTrackingDesc) Less(i, j int) bool { return a[i].At < a[j].At }
-
-// Implement sort interface
-func (a TimeTrackingAsc) Len() int           { return len(a) }
-func (a TimeTrackingAsc) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
-func (a TimeTrackingAsc) Less(i, j int) bool { return a[i].At > a[j].At }
 
 // MemoryStore uses a sync.Map to implement the Store interface.
 type MemoryStore struct {
 	s sync.Map
 
+	lastMod sync.Map
+	lastAcc sync.Map
+
+	// TODO: This could be a circular buff
+	cachedAcc sort.IntSlice
+
 	cap int
 	mc  sync.Mutex
-
-	// Last modified items to stream in order
-	lastMod TimeTrackingAsc
-	mm      sync.Mutex
-
-	// Last accessed items to clean least accessed item
-	lastAcc TimeTrackingDesc
-	ma      sync.Mutex
 }
 
 // NewMemoryStore creates a new instance of memoryStore
@@ -76,7 +52,6 @@ func (m *MemoryStore) Set(key, value string) error {
 
 	// Increase num
 	m.trackModifield(key)
-	m.initAccess(key)
 
 	// Reduce capacity
 	m.mc.Lock()
@@ -104,67 +79,71 @@ func (m *MemoryStore) Delete(key string) error {
 	v, _ := m.Get(key)
 	m.s.Delete(key)
 
+	m.cleanAccess(key)
+
 	m.mc.Lock()
 	m.cap += len(v)
 	m.mc.Unlock()
-
-	m.ma.Lock()
-	m.removeFromAccess(key)
-	m.ma.Unlock()
-
-	m.mm.Lock()
-	m.removeFromModified(key)
-	m.mm.Unlock()
 	return nil
 }
 
-func (m *MemoryStore) GetSortedLastModifiedList() TimeTrackingAsc {
-	sort.Sort(m.lastMod)
-	return m.lastMod
-}
-
-func (m *MemoryStore) clean(size int) {
-	sort.Sort(m.lastAcc)
-	for m.cap < size {
-		m.Delete(m.lastAcc[0].Key)
+func (m *MemoryStore) GetLastModifiedKeys() []string {
+	var (
+		i sort.IntSlice
+		r []string
+	)
+	m.lastAcc.Range(func(key interface{}, value interface{}) bool {
+		i = append(i, key.(int))
+		return true
+	})
+	sort.Sort(sort.Reverse(i))
+	for _, t := range i {
+		v, _ := m.lastMod.Load(t)
+		r = append(r, v.(string))
 	}
-}
-
-func (m *MemoryStore) removeFromModified(key string) {
-	for i, v := range m.lastMod {
-		if v.Key == key {
-			m.lastMod = append(m.lastMod[:i], m.lastMod[i+1:]...)
-			break
-		}
-	}
-}
-
-func (m *MemoryStore) removeFromAccess(key string) {
-	for i, v := range m.lastAcc {
-		if v.Key == key {
-			m.lastAcc = append(m.lastAcc[:i], m.lastAcc[i+1:]...)
-			break
-		}
-	}
-}
-
-func (m *MemoryStore) initAccess(key string) {
-	m.ma.Lock()
-	defer m.ma.Unlock()
-	m.removeFromAccess(key)
-	m.lastAcc = append(m.lastAcc, At{Key: key, At: 0})
-}
-
-func (m *MemoryStore) trackAccess(key string) {
-	m.ma.Lock()
-	defer m.ma.Unlock()
-	m.removeFromAccess(key)
-	m.lastAcc = append(m.lastAcc, At{Key: key, At: time.Now().Unix()})
+	return r
 }
 
 func (m *MemoryStore) trackModifield(key string) {
-	m.mm.Lock()
-	defer m.mm.Unlock()
-	m.removeFromModified(key)
-	m.lastMod = append(m.lastMod, At{Key: key, At: time.Now().Unix()})
+	m.lastMod.Store(time.Now().Unix(), key)
+}
+
+func (m *MemoryStore) trackAccess(key string) {
+	t := int(time.Now().Unix())
+	m.lastAcc.Store(t, key)
+	m.cachedAcc = append(m.cachedAcc, t)
+}
+
+func (m *MemoryStore) cleanAccess(key string) {
+	m.lastAcc.Range(func(t interface{}, value interface{}) bool {
+		if value.(string) == key {
+			m.lastAcc.Delete(key)
+			return false
+		}
+		return true
+	})
+
+	m.lastMod.Range(func(t interface{}, value interface{}) bool {
+		if value.(string) == key {
+			m.lastMod.Delete(key)
+			return false
+		}
+		return true
+	})
+}
+
+func (m *MemoryStore) clean(size int) {
+	if !sort.IsSorted(m.cachedAcc) {
+		m.lastAcc.Range(func(key interface{}, value interface{}) bool {
+			m.cachedAcc = append(m.cachedAcc, key.(int))
+			return true
+		})
+		sort.Sort(m.cachedAcc)
+	}
+
+	for m.cap < size && len(m.cachedAcc) > 0 {
+		k, _ := m.lastAcc.Load(m.cachedAcc[0])
+		m.cachedAcc = append(m.cachedAcc[:0], m.cachedAcc[1:]...)
+		m.Delete(k.(string))
+	}
 }
